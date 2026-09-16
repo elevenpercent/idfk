@@ -1,0 +1,24 @@
+rules_version = '2';
+
+// Paste this into Firebase Console → Firestore Database → Rules, then Publish.
+// Mirrors the old Supabase policy: anyone can read/post in a room (room code is
+// the only gate, no login), messages can't be edited or deleted, and basic
+// shape/length limits stop obviously malformed writes.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /rooms/{roomCode}/messages/{messageId} {
+      allow read: if true;
+
+      allow create: if request.resource.data.nickname is string
+                    && request.resource.data.nickname.size() > 0
+                    && request.resource.data.nickname.size() <= 32
+                    && request.resource.data.content is string
+                    && request.resource.data.content.size() > 0
+                    && request.resource.data.content.size() <= 2000
+                    && request.resource.data.createdAt == request.time;
+
+      allow update, delete: if false;
+    }
+  }
+}

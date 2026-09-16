@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<style>
+  :root {
+    --bg: #0e0f13;
+    --panel: #171921;
+    --line: #272a36;
+    --text: #e6e8ef;
+    --muted: #8b90a3;
+    --accent: #6ea8fe;
+    --mine: #23314a;
+    --theirs: #1b1d27;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .screen { display: flex; min-height: 100vh; align-items: center; justify-content: center; padding: 24px; }
+  .card {
+    width: 100%; max-width: 400px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 24px;
+  }
+  h1 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+  p.sub { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 14px 0 5px; }
+  input {
+    width: 100%; padding: 10px 12px;
+    background: #0e0f13; color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    font: inherit; font-size: 14px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+  button {
+    padding: 11px; background: var(--accent); color: #0e0f13;
+    border: 0; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: default; filter: none; }
+  #joinBtn { width: 100%; margin-top: 20px; }
+  .msg { margin-top: 12px; font-size: 13px; color: #ff9b9b; min-height: 18px; }
+
+  /* chat screen */
+  #chatScreen { display: none; flex-direction: column; height: 100vh; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+  }
+  header .room { font-weight: 600; font-size: 14px; }
+  header .room .code { color: var(--accent); }
+  header .who { font-size: 12px; color: var(--muted); }
+  header button {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 6px 10px; font-size: 12px;
+  }
+  header button:hover { color: var(--text); border-color: var(--muted); }
+  #log {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .bubble {
+    max-width: 78%; padding: 8px 12px; border-radius: 12px; font-size: 14px;
+    word-wrap: break-word; white-space: pre-wrap;
+  }
+  .bubble .name { font-size: 11px; color: var(--muted); margin-bottom: 2px; display: block; }
+  .bubble.theirs { align-self: flex-start; background: var(--theirs); border: 1px solid var(--line); }
+  .bubble.mine { align-self: flex-end; background: var(--mine); }
+  .bubble.system { align-self: center; color: var(--muted); font-size: 12px; background: none; }
+  .bubble img {
+    display: block; max-width: 100%; max-height: 280px;
+    border-radius: 8px; margin-top: 2px; cursor: zoom-in;
+  }
+  form#sendForm {
+    display: flex; gap: 8px; padding: 12px; background: var(--panel); border-top: 1px solid var(--line);
+  }
+  form#sendForm input[type="text"] { flex: 1; }
+  form#sendForm button { padding: 0 18px; }
+  #attachBtn {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 0 14px; font-size: 16px;
+  }
+  #attachBtn:hover { color: var(--text); border-color: var(--muted); }
+  #fileInput { display: none; }
+</style>
+</head>
+<body>
+
+  <div class="screen" id="joinScreen">
+    <div class="card">
+      <h1>Group chat</h1>
+      <p class="sub">Enter a room code to join or create it. Anyone with the same code sees the same room.</p>
+
+      <label for="nickname">Nickname</label>
+      <input id="nickname" maxlength="32" placeholder="e.g. guest42" autocomplete="off">
+
+      <label for="roomCode">Room code</label>
+      <input id="roomCode" maxlength="64" placeholder="e.g. movie-night" autocomplete="off">
+
+      <button id="joinBtn">Join / create room</button>
+      <div class="msg" id="joinMsg"></div>
+    </div>
+  </div>
+
+  <div id="chatScreen">
+    <header>
+      <div class="room">Room: <span class="code" id="roomLabel"></span></div>
+      <div class="who" id="whoLabel"></div>
+      <button id="leaveBtn">Leave</button>
+    </header>
+    <div id="log"></div>
+    <form id="sendForm">
+      <button type="button" id="attachBtn" title="Send an image">📎</button>
+      <input type="file" id="fileInput" accept="image/*">
+      <input type="text" id="msgInput" maxlength="2000" placeholder="Message..." autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import {
+  getFirestore, collection, addDoc, query, orderBy, limit,
+  onSnapshot, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+// Note: Firebase Storage requires the paid "Blaze" plan as of late 2024, even
+// for tiny usage. To avoid that, images are compressed client-side and stored
+// as a data URL directly inside the Firestore message document instead —
+// works entirely on the free Spark plan you already have.
+
+// --- Fill this in with the config from Firebase Console → Project settings → Your apps ---
+const firebaseConfig = {
+  apiKey: "AIzaSyD0KoHDPAhmJNFmMXHam4nNvFix6jVo04M",
+  authDomain: "idfk-af934.firebaseapp.com",
+  projectId: "idfk-af934",
+  storageBucket: "idfk-af934.firebasestorage.app",
+  messagingSenderId: "176329031605",
+  appId: "1:176329031605:web:fb821f1d6a96c046c8e3fc"
+};
+// -----------------------------------------------------------------------------------------
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+const MAX_ORIGINAL_BYTES = 15 * 1024 * 1024; // reject absurdly large source files up front
+const MAX_ENCODED_CHARS = 900000; // stay safely under Firestore's ~1MB document limit
+
+const joinScreen = document.getElementById('joinScreen');
+const chatScreen = document.getElementById('chatScreen');
+const nicknameInput = document.getElementById('nickname');
+const roomInput = document.getElementById('roomCode');
+const joinBtn = document.getElementById('joinBtn');
+const joinMsg = document.getElementById('joinMsg');
+const roomLabel = document.getElementById('roomLabel');
+const whoLabel = document.getElementById('whoLabel');
+const log = document.getElementById('log');
+const sendForm = document.getElementById('sendForm');
+const msgInput = document.getElementById('msgInput');
+const leaveBtn = document.getElementById('leaveBtn');
+const attachBtn = document.getElementById('attachBtn');
+const fileInput = document.getElementById('fileInput');
+
+let unsubscribe = null;
+let nickname = "";
+let room = "";
+let seenIds = new Set();
+
+// Pre-fill from URL hash (#room=CODE) or saved session, so a shared link works.
+const hashMatch = location.hash.match(/room=([^&]+)/);
+if (hashMatch) roomInput.value = decodeURIComponent(hashMatch[1]);
+const savedNick = sessionStorage.getItem('chat_nickname');
+if (savedNick) nicknameInput.value = savedNick;
+
+function addBubble(msgNickname, content, kind, imageUrl) {
+  const div = document.createElement('div');
+  div.className = 'bubble ' + kind;
+  if (kind === 'system') {
+    div.textContent = content;
+  } else {
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'name';
+    nameSpan.textContent = msgNickname;
+    div.appendChild(nameSpan);
+    if (imageUrl) {
+      const img = document.createElement('img');
+      img.src = imageUrl;
+      img.loading = 'lazy';
+      img.addEventListener('click', () => window.open(imageUrl, '_blank'));
+      div.appendChild(img);
+    } else {
+      div.appendChild(document.createTextNode(content));
+    }
+  }
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function roomMessagesRef(roomCode) {
+  return collection(db, 'rooms', roomCode, 'messages');
+}
+
+async function joinRoom() {
+  joinMsg.textContent = "";
+  nickname = nicknameInput.value.trim();
+  room = roomInput.value.trim();
+
+  if (!nickname) { joinMsg.textContent = "Enter a nickname."; return; }
+  if (!room) { joinMsg.textContent = "Enter a room code."; return; }
+
+  sessionStorage.setItem('chat_nickname', nickname);
+  joinBtn.disabled = true;
+  joinBtn.textContent = "Joining...";
+
+  try {
+    joinScreen.style.display = 'none';
+    chatScreen.style.display = 'flex';
+    roomLabel.textContent = room;
+    whoLabel.textContent = nickname;
+    location.hash = 'room=' + encodeURIComponent(room);
+
+    log.innerHTML = '';
+    seenIds = new Set();
+
+    const q = query(roomMessagesRef(room), orderBy('createdAt', 'asc'), limit(200));
+
+    let first = true;
+    unsubscribe = onSnapshot(q, snapshot => {
+      if (first) {
+        first = false;
+        if (snapshot.empty) addBubble('', 'No messages yet — say hi.', 'system');
+      }
+      snapshot.docChanges().forEach(change => {
+        if (change.type !== 'added') return;
+        if (seenIds.has(change.doc.id)) return;
+        seenIds.add(change.doc.id);
+        const m = change.doc.data();
+        addBubble(m.nickname, m.content, m.nickname === nickname ? 'mine' : 'theirs', m.imageUrl);
+      });
+    }, err => {
+      addBubble('', 'Connection error: ' + err.message, 'system');
+    });
+
+    msgInput.focus();
+  } catch (err) {
+    joinScreen.style.display = 'flex';
+    chatScreen.style.display = 'none';
+    joinMsg.textContent = "Couldn't connect: " + err.message;
+  } finally {
+    joinBtn.disabled = false;
+    joinBtn.textContent = "Join / create room";
+  }
+}
+
+async function sendMessage(e) {
+  e.preventDefault();
+  const content = msgInput.value.trim();
+  if (!content) return;
+  msgInput.value = '';
+  try {
+    await addDoc(roomMessagesRef(room), {
+      nickname: nickname,
+      content: content,
+      createdAt: serverTimestamp()
+    });
+  } catch (err) {
+    addBubble('', 'Failed to send: ' + err.message, 'system');
+  }
+}
+
+// Resizes/re-encodes an image file entirely in the browser and returns a
+// JPEG data URL — no upload service needed, keeps the result small enough
+// to fit inside one Firestore document.
+function compressImage(file, maxDim, quality) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the file'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Could not decode the image'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) { height = Math.round(height * (maxDim / width)); width = maxDim; }
+          else { width = Math.round(width * (maxDim / height)); height = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function sendImage(file) {
+  if (!file.type.startsWith('image/')) {
+    addBubble('', 'Only image files can be sent.', 'system');
+    return;
+  }
+  if (file.size > MAX_ORIGINAL_BYTES) {
+    addBubble('', 'Image too big (max 15MB source file).', 'system');
+    return;
+  }
+
+  attachBtn.disabled = true;
+  attachBtn.textContent = '⏳';
+  try {
+    // Try progressively harder compression until it fits in one document.
+    const attempts = [[1024, 0.7], [800, 0.5], [500, 0.4]];
+    let dataUrl = null;
+    for (const [maxDim, quality] of attempts) {
+      dataUrl = await compressImage(file, maxDim, quality);
+      if (dataUrl.length <= MAX_ENCODED_CHARS) break;
+    }
+    if (!dataUrl || dataUrl.length > MAX_ENCODED_CHARS) {
+      addBubble('', 'Image too complex to compress small enough — try a smaller picture.', 'system');
+      return;
+    }
+
+    await addDoc(roomMessagesRef(room), {
+      nickname: nickname,
+      content: '[image]',
+      imageUrl: dataUrl,
+      createdAt: serverTimestamp()
+    });
+  } catch (err) {
+    addBubble('', 'Failed to send image: ' + err.message, 'system');
+  } finally {
+    attachBtn.disabled = false;
+    attachBtn.textContent = '📎';
+  }
+}
+
+function leaveRoom() {
+  if (unsubscribe) unsubscribe();
+  unsubscribe = null;
+  location.hash = '';
+  chatScreen.style.display = 'none';
+  joinScreen.style.display = 'flex';
+  log.innerHTML = '';
+}
+
+joinBtn.addEventListener('click', joinRoom);
+roomInput.addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
+nicknameInput.addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
+sendForm.addEventListener('submit', sendMessage);
+leaveBtn.addEventListener('click', leaveRoom);
+attachBtn.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) sendImage(fileInput.files[0]);
+  fileInput.value = '';
+});
+
+// Auto-join if both nickname and room are already known (from a shared link + saved name).
+if (hashMatch && savedNick) joinRoom();
+</script>
+</body>
+</html>
